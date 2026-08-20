@@ -251,11 +251,6 @@ async function migrate(): Promise<void> {
     await db.exec("ALTER TABLE carpenters ADD COLUMN user_id INTEGER REFERENCES users(id)");
   }
 
-  const carpinteroRole = await db.prepare("SELECT id FROM roles WHERE name = 'carpintero'").get();
-  if (!carpinteroRole) {
-    await db.prepare("INSERT INTO roles (name, display_name, description) VALUES (?, ?, ?)").run('carpintero', 'Carpintero', 'Acceso limitado a sus asignaciones');
-  }
-
   const auditColumns = await db.prepare("PRAGMA table_info(audit_log)").all() as any[];
   const hasUserAgent = auditColumns.some((c: any) => c.name === 'user_agent');
   if (!hasUserAgent) {
@@ -264,8 +259,8 @@ async function migrate(): Promise<void> {
 }
 
 async function seedData(): Promise<void> {
-  const roleCount = await db.prepare('SELECT COUNT(*) as count FROM roles').get() as any;
-  if (roleCount.count > 0) return;
+  const adminUser = await db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
+  if (adminUser) return;
 
   await db.prepare('INSERT INTO roles (name, display_name, description) VALUES (?, ?, ?)').run('admin', 'Administrador', 'Acceso completo al sistema');
   await db.prepare('INSERT INTO roles (name, display_name, description) VALUES (?, ?, ?)').run('supervisor', 'Supervisor', 'Orientado a la operacion');

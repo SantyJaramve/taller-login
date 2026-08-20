@@ -12,3 +12,6 @@ Thumbs.db
 credenciales/
 client/imagenes/
 server/data/
+
+# Local Netlify folder
+.netlify
