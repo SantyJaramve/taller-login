@@ -19,8 +19,8 @@ export function createApp(): express.Express {
 
   // --- Strip Netlify Functions prefix (rewrite: /api/* -> /.netlify/functions/api/*) ---
   app.use((req, _res, next) => {
-    if (req.url.startsWith('/.netlify/functions/api')) {
-      req.url = req.url.replace('/.netlify/functions/api', '') || '/';
+    if (req.url.startsWith('/.netlify/functions')) {
+      req.url = req.url.replace('/.netlify/functions', '') || '/';
     }
     next();
   });

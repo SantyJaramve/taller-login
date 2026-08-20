@@ -6,10 +6,22 @@ let app;
 let handler;
 
 exports.handler = async (event, context) => {
-  if (!app) {
-    await initializeDatabase();
-    app = createApp();
-    handler = serverlessHttp(app);
+  try {
+    if (!app) {
+      console.log('Inicializando base de datos...');
+      await initializeDatabase();
+      console.log('Creando app Express...');
+      app = createApp();
+      handler = serverlessHttp(app);
+      console.log('App lista.');
+    }
+    return await handler(event, context);
+  } catch (err) {
+    console.error('Function error:', err);
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Error interno del servidor', detail: err.message }),
+    };
   }
-  return handler(event, context);
 };
