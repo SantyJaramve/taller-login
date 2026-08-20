@@ -7,11 +7,11 @@
 // =============================================================================
 
 import { Response } from 'express';
-import db from '../db/schema';
+import db from '../db/database';
 import { AuthRequest } from '../types';
 
-export function getMyProfile(req: AuthRequest, res: Response): void {
-  const carpenter = db.prepare(`
+export async function getMyProfile(req: AuthRequest, res: Response): Promise<void> {
+  const carpenter = await db.prepare(`
     SELECT c.*,
       GROUP_CONCAT(DISTINCT cz.zone) as zones,
       GROUP_CONCAT(DISTINCT kt.display_name) as capable_types
@@ -31,14 +31,14 @@ export function getMyProfile(req: AuthRequest, res: Response): void {
   res.json(carpenter);
 }
 
-export function getMyAssignments(req: AuthRequest, res: Response): void {
-  const carpenter = db.prepare('SELECT id FROM carpenters WHERE user_id = ?').get(req.user!.userId) as any;
+export async function getMyAssignments(req: AuthRequest, res: Response): Promise<void> {
+  const carpenter = await db.prepare('SELECT id FROM carpenters WHERE user_id = ?').get(req.user!.userId) as any;
   if (!carpenter) {
     res.status(404).json({ error: 'Carpintero no encontrado' });
     return;
   }
 
-  const kitchens = db.prepare(`
+  const kitchens = await db.prepare(`
     SELECT k.*,
       ks.name as status_name, ks.display_name as status_display, ks.color as status_color, ks.category as status_category,
       kt.name as type_name, kt.display_name as type_display, kt.code as type_code,
@@ -55,18 +55,18 @@ export function getMyAssignments(req: AuthRequest, res: Response): void {
   res.json(kitchens);
 }
 
-export function getMyStats(req: AuthRequest, res: Response): void {
-  const carpenter = db.prepare('SELECT id FROM carpenters WHERE user_id = ?').get(req.user!.userId) as any;
+export async function getMyStats(req: AuthRequest, res: Response): Promise<void> {
+  const carpenter = await db.prepare('SELECT id FROM carpenters WHERE user_id = ?').get(req.user!.userId) as any;
   if (!carpenter) {
     res.status(404).json({ error: 'Carpintero no encontrado' });
     return;
   }
 
-  const total = db.prepare('SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ?').get(carpenter.id) as any;
-  const completed = db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id = (SELECT id FROM kitchen_statuses WHERE name = 'completed')").get(carpenter.id) as any;
-  const inProgress = db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id = (SELECT id FROM kitchen_statuses WHERE name IN ('installing', 'evidence_received'))").get(carpenter.id) as any;
-  const pending = db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id NOT IN (SELECT id FROM kitchen_statuses WHERE name IN ('completed', 'rejected'))").get(carpenter.id) as any;
-  const rejected = db.prepare("SELECT COUNT(*) as count FROM assignments WHERE carpenter_id = ? AND status = 'rejected'").get(carpenter.id) as any;
+  const total = await db.prepare('SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ?').get(carpenter.id) as any;
+  const completed = await db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id = (SELECT id FROM kitchen_statuses WHERE name = 'completed')").get(carpenter.id) as any;
+  const inProgress = await db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id = (SELECT id FROM kitchen_statuses WHERE name IN ('installing', 'evidence_received'))").get(carpenter.id) as any;
+  const pending = await db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id NOT IN (SELECT id FROM kitchen_statuses WHERE name IN ('completed', 'rejected'))").get(carpenter.id) as any;
+  const rejected = await db.prepare("SELECT COUNT(*) as count FROM assignments WHERE carpenter_id = ? AND status = 'rejected'").get(carpenter.id) as any;
 
   res.json({
     total: total.count,
@@ -78,7 +78,7 @@ export function getMyStats(req: AuthRequest, res: Response): void {
   });
 }
 
-export function getCarpenters(req: AuthRequest, res: Response): void {
+export async function getCarpenters(req: AuthRequest, res: Response): Promise<void> {
   const { status, zone, type, search } = req.query;
 
   let where = 'WHERE c.is_active = 1';
@@ -98,7 +98,7 @@ export function getCarpenters(req: AuthRequest, res: Response): void {
     params.push(`%${search}%`);
   }
 
-  const carpenters = db.prepare(`
+  const carpenters = await db.prepare(`
     SELECT c.*,
       GROUP_CONCAT(DISTINCT cz.zone) as zones,
       GROUP_CONCAT(DISTINCT kt.display_name) as capable_types
@@ -114,10 +114,10 @@ export function getCarpenters(req: AuthRequest, res: Response): void {
   res.json(carpenters);
 }
 
-export function getCarpenterById(req: AuthRequest, res: Response): void {
+export async function getCarpenterById(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
 
-  const carpenter = db.prepare(`
+  const carpenter = await db.prepare(`
     SELECT c.*
     FROM carpenters c
     WHERE c.id = ?
@@ -128,15 +128,15 @@ export function getCarpenterById(req: AuthRequest, res: Response): void {
     return;
   }
 
-  const zones = db.prepare('SELECT zone FROM carpenter_zones WHERE carpenter_id = ?').all(id).map((r: any) => r.zone);
-  const types = db.prepare(`
+  const zones = (await db.prepare('SELECT zone FROM carpenter_zones WHERE carpenter_id = ?').all(id)).map((r: any) => r.zone);
+  const types = await db.prepare(`
     SELECT kt.id, kt.display_name, kt.code
     FROM carpenter_types ct
     JOIN kitchen_types kt ON ct.kitchen_type_id = kt.id
     WHERE ct.carpenter_id = ?
   `).all(id);
 
-  const installations = db.prepare(`
+  const installations = await db.prepare(`
     SELECT k.*, ks.display_name as status_display, ks.color as status_color,
       kt.display_name as type_display, b.full_name as beneficiary_name, b.address as beneficiary_address
     FROM kitchens k
@@ -147,7 +147,7 @@ export function getCarpenterById(req: AuthRequest, res: Response): void {
     ORDER BY k.created_at DESC
   `).all(id);
 
-  const observations = db.prepare(`
+  const observations = await db.prepare(`
     SELECT o.*, u.full_name as user_name
     FROM observations o
     LEFT JOIN users u ON o.user_id = u.id
@@ -155,13 +155,14 @@ export function getCarpenterById(req: AuthRequest, res: Response): void {
     ORDER BY o.created_at DESC
   `).all(id);
 
-  const stats = {
-    total: db.prepare('SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ?').get(id) as any,
-    completed: db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id = (SELECT id FROM kitchen_statuses WHERE name = 'completed')").get(id) as any,
-    rejected: db.prepare("SELECT COUNT(*) as count FROM assignments WHERE carpenter_id = ? AND status = 'rejected'").get(id) as any,
-    accepted: db.prepare("SELECT COUNT(*) as count FROM assignments WHERE carpenter_id = ? AND status = 'accepted'").get(id) as any,
-    pending: db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id NOT IN (SELECT id FROM kitchen_statuses WHERE name IN ('completed', 'rejected'))").get(id) as any,
-  };
+  const statsTotal = await db.prepare('SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ?').get(id) as any;
+  const statsCompleted = await db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id = (SELECT id FROM kitchen_statuses WHERE name = 'completed')").get(id) as any;
+  const statsRejected = await db.prepare("SELECT COUNT(*) as count FROM assignments WHERE carpenter_id = ? AND status = 'rejected'").get(id) as any;
+  const statsAccepted = await db.prepare("SELECT COUNT(*) as count FROM assignments WHERE carpenter_id = ? AND status = 'accepted'").get(id) as any;
+  const statsPending = await db.prepare("SELECT COUNT(*) as count FROM kitchens WHERE assigned_carpenter_id = ? AND status_id NOT IN (SELECT id FROM kitchen_statuses WHERE name IN ('completed', 'rejected'))").get(id) as any;
+
+  const total = statsTotal.count;
+  const completed = statsCompleted.count;
 
   res.json({
     ...(carpenter as any),
@@ -170,18 +171,18 @@ export function getCarpenterById(req: AuthRequest, res: Response): void {
     installations,
     observations,
     stats: {
-      total: stats.total.count,
-      completed: stats.completed.count,
-      rejected: stats.rejected.count,
-      accepted: stats.accepted.count,
-      pending: stats.pending.count,
-      completion_rate: stats.total.count > 0 ? Math.round((stats.completed.count / stats.total.count) * 100) : 0,
-      rejection_rate: stats.total.count > 0 ? Math.round((stats.rejected.count / stats.total.count) * 100) : 0,
+      total,
+      completed,
+      rejected: statsRejected.count,
+      accepted: statsAccepted.count,
+      pending: statsPending.count,
+      completion_rate: total > 0 ? Math.round((completed / total) * 100) : 0,
+      rejection_rate: total > 0 ? Math.round((statsRejected.count / total) * 100) : 0,
     },
   });
 }
 
-export function createCarpenter(req: AuthRequest, res: Response): void {
+export async function createCarpenter(req: AuthRequest, res: Response): Promise<void> {
   const { full_name, phone, whatsapp, email, max_capacity, zones, types, notes } = req.body;
 
   if (!full_name) {
@@ -189,41 +190,39 @@ export function createCarpenter(req: AuthRequest, res: Response): void {
     return;
   }
 
-  const result = db.prepare(
+  const result = await db.prepare(
     'INSERT INTO carpenters (full_name, phone, whatsapp, email, max_capacity, notes) VALUES (?, ?, ?, ?, ?, ?)'
   ).run(full_name, phone || null, whatsapp || null, email || null, max_capacity || 3, notes || null);
 
   const carpenterId = result.lastInsertRowid;
 
   if (zones && Array.isArray(zones)) {
-    const insertZone = db.prepare('INSERT INTO carpenter_zones (carpenter_id, zone) VALUES (?, ?)');
     for (const zone of zones) {
-      insertZone.run(carpenterId, zone);
+      await db.prepare('INSERT INTO carpenter_zones (carpenter_id, zone) VALUES (?, ?)').run(carpenterId, zone);
     }
   }
 
   if (types && Array.isArray(types)) {
-    const insertType = db.prepare('INSERT INTO carpenter_types (carpenter_id, kitchen_type_id) VALUES (?, ?)');
     for (const typeId of types) {
-      insertType.run(carpenterId, typeId);
+      await db.prepare('INSERT INTO carpenter_types (carpenter_id, kitchen_type_id) VALUES (?, ?)').run(carpenterId, typeId);
     }
   }
 
   res.status(201).json({ id: carpenterId });
 }
 
-export function updateCarpenter(req: AuthRequest, res: Response): void {
+export async function updateCarpenter(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
   const { full_name, phone, whatsapp, email, status, max_capacity, notes, zones, types } = req.body;
 
-  const carpenter = db.prepare('SELECT id FROM carpenters WHERE id = ?').get(id);
+  const carpenter = await db.prepare('SELECT id FROM carpenters WHERE id = ?').get(id);
   if (!carpenter) {
     res.status(404).json({ error: 'Carpintero no encontrado' });
     return;
   }
 
-  db.prepare(`
-    UPDATE carpenters SET 
+  await db.prepare(`
+    UPDATE carpenters SET
       full_name = COALESCE(?, full_name),
       phone = COALESCE(?, phone),
       whatsapp = COALESCE(?, whatsapp),
@@ -236,25 +235,23 @@ export function updateCarpenter(req: AuthRequest, res: Response): void {
   `).run(full_name, phone, whatsapp, email, status, max_capacity, notes, id);
 
   if (zones && Array.isArray(zones)) {
-    db.prepare('DELETE FROM carpenter_zones WHERE carpenter_id = ?').run(id);
-    const insertZone = db.prepare('INSERT INTO carpenter_zones (carpenter_id, zone) VALUES (?, ?)');
+    await db.prepare('DELETE FROM carpenter_zones WHERE carpenter_id = ?').run(id);
     for (const zone of zones) {
-      insertZone.run(id, zone);
+      await db.prepare('INSERT INTO carpenter_zones (carpenter_id, zone) VALUES (?, ?)').run(id, zone);
     }
   }
 
   if (types && Array.isArray(types)) {
-    db.prepare('DELETE FROM carpenter_types WHERE carpenter_id = ?').run(id);
-    const insertType = db.prepare('INSERT INTO carpenter_types (carpenter_id, kitchen_type_id) VALUES (?, ?)');
+    await db.prepare('DELETE FROM carpenter_types WHERE carpenter_id = ?').run(id);
     for (const typeId of types) {
-      insertType.run(id, typeId);
+      await db.prepare('INSERT INTO carpenter_types (carpenter_id, kitchen_type_id) VALUES (?, ?)').run(id, typeId);
     }
   }
 
   res.json({ message: 'Carpintero actualizado exitosamente' });
 }
 
-export function addCarpenterObservation(req: AuthRequest, res: Response): void {
+export async function addCarpenterObservation(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
   const { content } = req.body;
 
@@ -263,18 +260,18 @@ export function addCarpenterObservation(req: AuthRequest, res: Response): void {
     return;
   }
 
-  const result = db.prepare(
+  const result = await db.prepare(
     'INSERT INTO observations (entity_type, entity_id, user_id, content) VALUES (?, ?, ?, ?)'
   ).run('carpenter', id, req.user!.userId, content);
 
   res.status(201).json({ id: result.lastInsertRowid });
 }
 
-export function getCarpentersStats(req: AuthRequest, res: Response): void {
-  const total = db.prepare('SELECT COUNT(*) as count FROM carpenters WHERE is_active = 1').get() as any;
-  const available = db.prepare("SELECT COUNT(*) as count FROM carpenters WHERE status = 'available' AND is_active = 1").get() as any;
-  const busy = db.prepare("SELECT COUNT(*) as count FROM carpenters WHERE status = 'busy' AND is_active = 1").get() as any;
-  const inactive = db.prepare("SELECT COUNT(*) as count FROM carpenters WHERE status = 'inactive' AND is_active = 1").get() as any;
+export async function getCarpentersStats(req: AuthRequest, res: Response): Promise<void> {
+  const total = await db.prepare('SELECT COUNT(*) as count FROM carpenters WHERE is_active = 1').get() as any;
+  const available = await db.prepare("SELECT COUNT(*) as count FROM carpenters WHERE status = 'available' AND is_active = 1").get() as any;
+  const busy = await db.prepare("SELECT COUNT(*) as count FROM carpenters WHERE status = 'busy' AND is_active = 1").get() as any;
+  const inactive = await db.prepare("SELECT COUNT(*) as count FROM carpenters WHERE status = 'inactive' AND is_active = 1").get() as any;
 
   res.json({
     total: total.count,

@@ -5,13 +5,13 @@
 // =============================================================================
 
 import { Response } from 'express';
-import db from '../db/schema';
+import db from '../db/database';
 import { AuthRequest } from '../types';
 
-export function getCandidates(req: AuthRequest, res: Response): void {
+export async function getCandidates(req: AuthRequest, res: Response): Promise<void> {
   const { kitchenId } = req.params;
 
-  const kitchen = db.prepare(`
+  const kitchen = await db.prepare(`
     SELECT k.*, kt.category as type_category, kt.subcategory as type_subcategory,
       b.zone as beneficiary_zone
     FROM kitchens k
@@ -25,10 +25,9 @@ export function getCandidates(req: AuthRequest, res: Response): void {
     return;
   }
 
-  const typeCategory = kitchen.type_category;
   const beneficiaryZone = kitchen.beneficiary_zone;
 
-  const candidates = db.prepare(`
+  const candidates = await db.prepare(`
     SELECT c.*,
       GROUP_CONCAT(DISTINCT cz.zone) as zones,
       GROUP_CONCAT(DISTINCT ct.kitchen_type_id) as type_ids,
@@ -121,7 +120,7 @@ export function getCandidates(req: AuthRequest, res: Response): void {
   });
 }
 
-export function createAssignment(req: AuthRequest, res: Response): void {
+export async function createAssignment(req: AuthRequest, res: Response): Promise<void> {
   const { kitchen_id, carpenter_id, notes } = req.body;
 
   if (!kitchen_id || !carpenter_id) {
@@ -129,87 +128,86 @@ export function createAssignment(req: AuthRequest, res: Response): void {
     return;
   }
 
-  const kitchen = db.prepare('SELECT * FROM kitchens WHERE id = ?').get(kitchen_id) as any;
+  const kitchen = await db.prepare('SELECT * FROM kitchens WHERE id = ?').get(kitchen_id) as any;
   if (!kitchen) {
     res.status(404).json({ error: 'Cocina no encontrada' });
     return;
   }
 
-  const carpenter = db.prepare('SELECT * FROM carpenters WHERE id = ?').get(carpenter_id) as any;
+  const carpenter = await db.prepare('SELECT * FROM carpenters WHERE id = ?').get(carpenter_id) as any;
   if (!carpenter) {
     res.status(404).json({ error: 'Carpintero no encontrado' });
     return;
   }
 
-  const carpenterContactedStatus = db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'carpenter_contacted'").get() as any;
-  const pendingResponseStatus = db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'pending_response'").get() as any;
+  const pendingResponseStatus = await db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'pending_response'").get() as any;
 
-  db.prepare(
+  await db.prepare(
     'INSERT INTO assignments (kitchen_id, carpenter_id, assigned_by, notes) VALUES (?, ?, ?, ?)'
   ).run(kitchen_id, carpenter_id, req.user!.userId, notes || null);
 
-  db.prepare(`UPDATE kitchens SET assigned_carpenter_id = ?, assigned_by = ?, assigned_at = datetime('now') WHERE id = ?`)
+  await db.prepare(`UPDATE kitchens SET assigned_carpenter_id = ?, assigned_by = ?, assigned_at = datetime('now') WHERE id = ?`)
     .run(carpenter_id, req.user!.userId, kitchen_id);
 
   if (kitchen.status_id < pendingResponseStatus.id) {
-    db.prepare('UPDATE kitchens SET status_id = ? WHERE id = ?')
+    await db.prepare('UPDATE kitchens SET status_id = ? WHERE id = ?')
       .run(pendingResponseStatus.id, kitchen_id);
 
-    db.prepare(
+    await db.prepare(
       'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
     ).run(kitchen_id, kitchen.status_id, pendingResponseStatus.id, req.user!.userId, `Carpintero ${carpenter.full_name} contactado`);
   }
 
-  res.status(201).json({ message: 'Asignación creada exitosamente' });
+  res.status(201).json({ message: 'Asignacion creada exitosamente' });
 }
 
-export function respondAssignment(req: AuthRequest, res: Response): void {
+export async function respondAssignment(req: AuthRequest, res: Response): Promise<void> {
   const { kitchenId } = req.params;
   const { accepted, notes } = req.body;
 
-  const assignment = db.prepare(
+  const assignment = await db.prepare(
     "SELECT a.*, c.full_name as carpenter_name FROM assignments a JOIN carpenters c ON a.carpenter_id = c.id WHERE a.kitchen_id = ? AND a.status = 'pending' ORDER BY a.created_at DESC LIMIT 1"
   ).get(kitchenId) as any;
 
   if (!assignment) {
-    res.status(404).json({ error: 'No hay asignación pendiente para esta cocina' });
+    res.status(404).json({ error: 'No hay asignacion pendiente para esta cocina' });
     return;
   }
 
   const newStatus = accepted ? 'accepted' : 'rejected';
-  db.prepare(`UPDATE assignments SET status = ?, response_at = datetime('now'), notes = COALESCE(?, notes), updated_at = datetime('now') WHERE id = ?`)
+  await db.prepare(`UPDATE assignments SET status = ?, response_at = datetime('now'), notes = COALESCE(?, notes), updated_at = datetime('now') WHERE id = ?`)
     .run(newStatus, notes || null, assignment.id);
 
-  const assignedStatus = db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'assigned'").get() as any;
-  const rejectedStatus = db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'rejected'").get() as any;
+  const assignedStatus = await db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'assigned'").get() as any;
+  const rejectedStatus = await db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'rejected'").get() as any;
 
-  const kitchen = db.prepare('SELECT * FROM kitchens WHERE id = ?').get(kitchenId) as any;
+  const kitchen = await db.prepare('SELECT * FROM kitchens WHERE id = ?').get(kitchenId) as any;
 
   if (accepted) {
-    db.prepare('UPDATE kitchens SET status_id = ? WHERE id = ?').run(assignedStatus.id, kitchenId);
+    await db.prepare('UPDATE kitchens SET status_id = ? WHERE id = ?').run(assignedStatus.id, kitchenId);
 
-    db.prepare(
+    await db.prepare(
       'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
-    ).run(kitchenId, kitchen.status_id, assignedStatus.id, req.user!.userId, `Carpintero ${assignment.carpenter_name} aceptó`);
+    ).run(kitchenId, kitchen.status_id, assignedStatus.id, req.user!.userId, `Carpintero ${assignment.carpenter_name} acepto`);
 
-    const carpenter = db.prepare('SELECT * FROM carpenters WHERE id = ?').get(assignment.carpenter_id) as any;
+    const carpenter = await db.prepare('SELECT * FROM carpenters WHERE id = ?').get(assignment.carpenter_id) as any;
     if (carpenter) {
-      db.prepare('UPDATE carpenters SET current_load = current_load + 1, status = CASE WHEN current_load + 1 >= max_capacity THEN "busy" ELSE status END WHERE id = ?')
-        .run(assignment.carpenter_id);
+      await db.prepare('UPDATE carpenters SET current_load = current_load + 1, status = CASE WHEN current_load + 1 >= max_capacity THEN ? ELSE status END WHERE id = ?')
+        .run('busy', assignment.carpenter_id);
     }
   } else {
-    db.prepare('UPDATE kitchens SET status_id = ?, assigned_carpenter_id = NULL, assigned_by = NULL WHERE id = ?')
+    await db.prepare('UPDATE kitchens SET status_id = ?, assigned_carpenter_id = NULL, assigned_by = NULL WHERE id = ?')
       .run(rejectedStatus.id, kitchenId);
 
-    db.prepare(
+    await db.prepare(
       'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
-    ).run(kitchenId, kitchen.status_id, rejectedStatus.id, req.user!.userId, `Carpintero ${assignment.carpenter_name} rechazó`);
+    ).run(kitchenId, kitchen.status_id, rejectedStatus.id, req.user!.userId, `Carpintero ${assignment.carpenter_name} rechazo`);
   }
 
-  res.json({ message: accepted ? 'Asignación aceptada' : 'Asignación rechazada' });
+  res.json({ message: accepted ? 'Asignacion aceptada' : 'Asignacion rechazada' });
 }
 
-export function getAssignments(req: AuthRequest, res: Response): void {
+export async function getAssignments(req: AuthRequest, res: Response): Promise<void> {
   const { status, carpenter, page = '1', limit = '20' } = req.query;
 
   let where = 'WHERE 1=1';
@@ -220,9 +218,9 @@ export function getAssignments(req: AuthRequest, res: Response): void {
 
   const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
 
-  const countResult = db.prepare(`SELECT COUNT(*) as count FROM assignments a ${where}`).get(...params) as any;
+  const countResult = await db.prepare(`SELECT COUNT(*) as count FROM assignments a ${where}`).get(...params) as any;
 
-  const assignments = db.prepare(`
+  const assignments = await db.prepare(`
     SELECT a.*,
       k.kitchen_number, kt.display_name as kitchen_type,
       b.full_name as beneficiary_name, b.zone as beneficiary_zone,
