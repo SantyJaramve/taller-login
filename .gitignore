@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+uploads/
+.DS_Store
+Thumbs.db
+credenciales/
+client/imagenes/
+server/data/
