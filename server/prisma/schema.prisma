@@ -1,0 +1,324 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ROLES Y USUARIOS
+// =============================================================================
+
+model Role {
+  id          Int    @id @default(autoincrement())
+  name        String @unique
+  displayName String @map("display_name")
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  users       User[]
+
+  @@map("roles")
+}
+
+model User {
+  id           Int    @id @default(autoincrement())
+  username     String @unique
+  email        String @unique
+  passwordHash String @map("password_hash")
+  fullName     String @map("full_name")
+  roleId       Int    @map("role_id")
+  isActive     Int    @default(1) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @map("updated_at")
+
+  role                  Role                  @relation(fields: [roleId], references: [id])
+  carpenters            Carpenter[]
+  kitchensCreated       Kitchen[]             @relation("KitchensCreatedBy")
+  kitchensAssigned      Kitchen[]             @relation("KitchensAssignedBy")
+  kitchenStatusHistory  KitchenStatusHistory[]
+  assignments           Assignment[]
+  evidenceUploaded      Evidence[]            @relation("EvidenceUploadedBy")
+  evidenceValidated     Evidence[]            @relation("EvidenceValidatedBy")
+  observations          Observation[]
+  auditLogs             AuditLog[]
+  passwordResets        PasswordReset[]
+  loginHistory          LoginHistory[]
+
+  @@map("users")
+}
+
+// =============================================================================
+// TIPOS Y ESTADOS DE COCINAS
+// =============================================================================
+
+model KitchenType {
+  id          Int    @id @default(autoincrement())
+  name        String
+  code        String @unique
+  category    String
+  subcategory String
+  displayName String @map("display_name")
+  isActive    Int    @default(1) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  kitchens          Kitchen[]
+  carpenterTypes    CarpenterType[]
+
+  @@map("kitchen_types")
+}
+
+model KitchenStatus {
+  id          Int    @id @default(autoincrement())
+  name        String @unique
+  displayName String @map("display_name")
+  color       String @default("#6B7280")
+  sortOrder   Int    @default(0) @map("sort_order")
+  category    String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  kitchens              Kitchen[]
+  kitchenStatusHistory  KitchenStatusHistory[] @relation("OldStatus")
+  kitchenStatusHistory2 KitchenStatusHistory[] @relation("NewStatus")
+
+  @@map("kitchen_statuses")
+}
+
+// =============================================================================
+// CARPINTEROS
+// =============================================================================
+
+model Carpenter {
+  id          Int    @id @default(autoincrement())
+  fullName    String @map("full_name")
+  phone       String?
+  whatsapp    String?
+  email       String?
+  status      String @default("available")
+  maxCapacity Int    @default(3) @map("max_capacity")
+  currentLoad Int    @default(0) @map("current_load")
+  notes       String?
+  isActive    Int    @default(1) @map("is_active")
+  userId      Int?   @map("user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  user              User?              @relation(fields: [userId], references: [id])
+  carpenterTypes    CarpenterType[]
+  carpenterZones    CarpenterZone[]
+  kitchens          Kitchen[]
+  assignments       Assignment[]
+
+  @@map("carpenters")
+}
+
+model CarpenterType {
+  carpenterId    Int @map("carpenter_id")
+  kitchenTypeId  Int @map("kitchen_type_id")
+
+  carpenter    Carpenter  @relation(fields: [carpenterId], references: [id], onDelete: Cascade)
+  kitchenType  KitchenType @relation(fields: [kitchenTypeId], references: [id], onDelete: Cascade)
+
+  @@id([carpenterId, kitchenTypeId])
+  @@map("carpenter_types")
+}
+
+model CarpenterZone {
+  id          Int    @id @default(autoincrement())
+  carpenterId Int    @map("carpenter_id")
+  zone        String
+
+  carpenter Carpenter @relation(fields: [carpenterId], references: [id], onDelete: Cascade)
+
+  @@map("carpenter_zones")
+}
+
+// =============================================================================
+// BENEFICIARIOS
+// =============================================================================
+
+model Beneficiary {
+  id           Int    @id @default(autoincrement())
+  fullName     String @map("full_name")
+  phone        String?
+  whatsapp     String?
+  address      String
+  zone         String?
+  neighborhood String?
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @map("updated_at")
+
+  kitchens Kitchen[]
+
+  @@map("beneficiaries")
+}
+
+// =============================================================================
+// COCINAS
+// =============================================================================
+
+model Kitchen {
+  id                  Int       @id @default(autoincrement())
+  kitchenNumber       String?   @unique @map("kitchen_number")
+  kitchenTypeId       Int       @map("kitchen_type_id")
+  beneficiaryId       Int?      @map("beneficiary_id")
+  statusId            Int       @map("status_id")
+  assignedCarpenterId Int?      @map("assigned_carpenter_id")
+  createdBy           Int       @map("created_by")
+  assignedBy          Int?      @map("assigned_by")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  assignedAt          DateTime? @map("assigned_at")
+  installationDate    DateTime? @map("installation_date")
+  completedAt         DateTime? @map("completed_at")
+  whatsappMessageSent Int       @default(0) @map("whatsapp_message_sent")
+  notes               String?
+
+  kitchenType         KitchenType          @relation(fields: [kitchenTypeId], references: [id])
+  beneficiary         Beneficiary?         @relation(fields: [beneficiaryId], references: [id])
+  status              KitchenStatus        @relation(fields: [statusId], references: [id])
+  assignedCarpenter   Carpenter?           @relation(fields: [assignedCarpenterId], references: [id])
+  creator             User                 @relation("KitchensCreatedBy", fields: [createdBy], references: [id])
+  assigner            User?                @relation("KitchensAssignedBy", fields: [assignedBy], references: [id])
+  statusHistory       KitchenStatusHistory[]
+  assignments         Assignment[]
+  evidence            Evidence[]
+
+  @@map("kitchens")
+}
+
+model KitchenStatusHistory {
+  id          Int      @id @default(autoincrement())
+  kitchenId   Int      @map("kitchen_id")
+  oldStatusId Int?     @map("old_status_id")
+  newStatusId Int      @map("new_status_id")
+  changedBy   Int      @map("changed_by")
+  changedAt   DateTime @default(now()) @map("changed_at")
+  notes       String?
+
+  kitchen     Kitchen       @relation(fields: [kitchenId], references: [id], onDelete: Cascade)
+  oldStatus   KitchenStatus? @relation("OldStatus", fields: [oldStatusId], references: [id])
+  newStatus   KitchenStatus  @relation("NewStatus", fields: [newStatusId], references: [id])
+  changer     User          @relation(fields: [changedBy], references: [id])
+
+  @@map("kitchen_status_history")
+}
+
+// =============================================================================
+// ASIGNACIONES
+// =============================================================================
+
+model Assignment {
+  id          Int      @id @default(autoincrement())
+  kitchenId   Int      @map("kitchen_id")
+  carpenterId Int      @map("carpenter_id")
+  assignedBy  Int      @map("assigned_by")
+  status      String   @default("pending")
+  responseAt  DateTime? @map("response_at")
+  notes       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  kitchen   Kitchen   @relation(fields: [kitchenId], references: [id])
+  carpenter Carpenter @relation(fields: [carpenterId], references: [id])
+  assigner  User      @relation(fields: [assignedBy], references: [id])
+
+  @@map("assignments")
+}
+
+// =============================================================================
+// EVIDENCIA
+// =============================================================================
+
+model Evidence {
+  id          Int       @id @default(autoincrement())
+  kitchenId   Int       @map("kitchen_id")
+  imageUrl    String    @map("image_url")
+  uploadedBy  Int       @map("uploaded_by")
+  validated   Int       @default(0)
+  validatedBy Int?      @map("validated_by")
+  validatedAt DateTime? @map("validated_at")
+  notes       String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  kitchen       Kitchen @relation(fields: [kitchenId], references: [id], onDelete: Cascade)
+  uploader      User    @relation("EvidenceUploadedBy", fields: [uploadedBy], references: [id])
+  validator     User?   @relation("EvidenceValidatedBy", fields: [validatedBy], references: [id])
+
+  @@map("evidence")
+}
+
+// =============================================================================
+// OBSERVACIONES
+// =============================================================================
+
+model Observation {
+  id         Int      @id @default(autoincrement())
+  entityType String   @map("entity_type")
+  entityId   Int      @map("entity_id")
+  userId     Int      @map("user_id")
+  content    String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@map("observations")
+}
+
+// =============================================================================
+// AUDIT LOG
+// =============================================================================
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?     @map("user_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   Int?     @map("entity_id")
+  oldValue   String?  @map("old_value")
+  newValue   String?  @map("new_value")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("audit_log")
+}
+
+// =============================================================================
+// PASSWORD RESETS
+// =============================================================================
+
+model PasswordReset {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  used      Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("password_resets")
+}
+
+// =============================================================================
+// LOGIN HISTORY
+// =============================================================================
+
+model LoginHistory {
+  id              Int      @id @default(autoincrement())
+  userId          Int?     @map("user_id")
+  usernameAttempted String? @map("username_attempted")
+  success         Int      @default(0)
+  ipAddress       String?  @map("ip_address")
+  userAgent       String?  @map("user_agent")
+  failureReason   String?  @map("failure_reason")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("login_history")
+}

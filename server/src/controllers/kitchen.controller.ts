@@ -1,196 +1,126 @@
 // =============================================================================
 // CONTROLADOR DE COCINAS - CocinasApp
 // =============================================================================
-// Funciones: getKitchens, getKitchenById, createKitchen, updateKitchenStatus,
-//            updateKitchen, addObservation, uploadEvidence, validateEvidence,
-//            generateWhatsAppMessage, getKitchensStats
-// =============================================================================
 
 import { Response } from 'express';
-import db from '../db/database';
+import prisma from '../lib/prisma';
 import { AuthRequest } from '../types';
+
+const kitchenInclude = {
+  kitchenType: true,
+  status: true,
+  beneficiary: true,
+  assignedCarpenter: true,
+  creator: { select: { fullName: true } },
+  assigner: { select: { fullName: true } },
+};
+
+function formatKitchen(k: any) {
+  return {
+    ...k,
+    beneficiary_name: k.beneficiary?.fullName,
+    beneficiary_phone: k.beneficiary?.phone,
+    beneficiary_whatsapp: k.beneficiary?.whatsapp,
+    beneficiary_address: k.beneficiary?.address,
+    beneficiary_zone: k.beneficiary?.zone,
+    beneficiary_neighborhood: k.beneficiary?.neighborhood,
+    beneficiary_notes: k.beneficiary?.notes,
+    carpenter_name: k.assignedCarpenter?.fullName,
+    carpenter_phone: k.assignedCarpenter?.phone,
+    carpenter_whatsapp: k.assignedCarpenter?.whatsapp,
+    carpenter_status: k.assignedCarpenter?.status,
+    status_name: k.status?.name,
+    status_display: k.status?.displayName,
+    status_color: k.status?.color,
+    status_category: k.status?.category,
+    type_name: k.kitchenType?.name,
+    type_display: k.kitchenType?.displayName,
+    type_code: k.kitchenType?.code,
+    type_category: k.kitchenType?.category,
+    type_subcategory: k.kitchenType?.subcategory,
+    created_by_name: k.creator?.fullName,
+    assigned_by_name: k.assigner?.fullName,
+  };
+}
 
 export async function getKitchens(req: AuthRequest, res: Response): Promise<void> {
   const { status, type, zone, carpenter, search, page = '1', limit = '20' } = req.query;
+  const pageNum = parseInt(page as string);
+  const limitNum = parseInt(limit as string);
+  const skip = (pageNum - 1) * limitNum;
 
-  let where = 'WHERE 1=1';
-  const params: any[] = [];
-
-  if (status) { where += ' AND ks.name = ?'; params.push(status); }
-  if (type) { where += ' AND kt.id = ?'; params.push(type); }
-  if (zone) { where += ' AND b.zone = ?'; params.push(zone); }
-  if (carpenter) { where += ' AND c.id = ?'; params.push(carpenter); }
+  const where: any = {};
+  if (status) where.status = { name: status as string };
+  if (type) where.kitchenTypeId = parseInt(type as string);
+  if (zone) where.beneficiary = { zone: zone as string };
+  if (carpenter) where.assignedCarpenterId = parseInt(carpenter as string);
   if (search) {
-    where += ' AND (k.kitchen_number LIKE ? OR b.full_name LIKE ? OR b.address LIKE ?)';
-    const s = `%${search}%`;
-    params.push(s, s, s);
+    where.OR = [
+      { kitchenNumber: { contains: search as string, mode: 'insensitive' } },
+      { beneficiary: { fullName: { contains: search as string, mode: 'insensitive' } } },
+      { beneficiary: { address: { contains: search as string, mode: 'insensitive' } } },
+    ];
   }
 
-  const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
+  const [data, total] = await Promise.all([
+    prisma.kitchen.findMany({ where, include: kitchenInclude, orderBy: { createdAt: 'desc' }, skip, take: limitNum }),
+    prisma.kitchen.count({ where })
+  ]);
 
-  const countResult = await db.prepare(`
-    SELECT COUNT(*) as total
-    FROM kitchens k
-    LEFT JOIN kitchen_statuses ks ON k.status_id = ks.id
-    LEFT JOIN kitchen_types kt ON k.kitchen_type_id = kt.id
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    LEFT JOIN carpenters c ON k.assigned_carpenter_id = c.id
-    ${where}
-  `).get(...params) as any;
-
-  const kitchens = await db.prepare(`
-    SELECT k.*,
-      ks.name as status_name, ks.display_name as status_display, ks.color as status_color, ks.category as status_category,
-      kt.name as type_name, kt.display_name as type_display, kt.code as type_code, kt.category as type_category,
-      b.full_name as beneficiary_name, b.phone as beneficiary_phone, b.whatsapp as beneficiary_whatsapp,
-      b.address as beneficiary_address, b.zone as beneficiary_zone, b.neighborhood as beneficiary_neighborhood,
-      c.full_name as carpenter_name, c.phone as carpenter_phone, c.status as carpenter_status,
-      u.full_name as created_by_name,
-      u2.full_name as assigned_by_name
-    FROM kitchens k
-    LEFT JOIN kitchen_statuses ks ON k.status_id = ks.id
-    LEFT JOIN kitchen_types kt ON k.kitchen_type_id = kt.id
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    LEFT JOIN carpenters c ON k.assigned_carpenter_id = c.id
-    LEFT JOIN users u ON k.created_by = u.id
-    LEFT JOIN users u2 ON k.assigned_by = u2.id
-    ${where}
-    ORDER BY k.created_at DESC
-    LIMIT ? OFFSET ?
-  `).all(...params, parseInt(limit as string), offset);
-
-  res.json({
-    data: kitchens,
-    total: countResult.total,
-    page: parseInt(page as string),
-    totalPages: Math.ceil(countResult.total / parseInt(limit as string)),
-  });
+  res.json({ data: data.map(formatKitchen), total, page: pageNum, totalPages: Math.ceil(total / limitNum) });
 }
 
 export async function getKitchenById(req: AuthRequest, res: Response): Promise<void> {
-  const { id } = req.params;
+  const kitchenId = parseInt(req.params.id);
+  const kitchen = await prisma.kitchen.findUnique({ where: { id: kitchenId }, include: { ...kitchenInclude, statusHistory: { include: { oldStatus: true, newStatus: true, changer: { select: { fullName: true } } }, orderBy: { changedAt: 'asc' } }, evidence: { include: { uploader: { select: { fullName: true } }, validator: { select: { fullName: true } } }, orderBy: { createdAt: 'desc' } } } });
 
-  const kitchen = await db.prepare(`
-    SELECT k.*,
-      ks.name as status_name, ks.display_name as status_display, ks.color as status_color, ks.category as status_category,
-      kt.name as type_name, kt.display_name as type_display, kt.code as type_code,
-      kt.category as type_category, kt.subcategory as type_subcategory,
-      b.full_name as beneficiary_name, b.phone as beneficiary_phone, b.whatsapp as beneficiary_whatsapp,
-      b.address as beneficiary_address, b.zone as beneficiary_zone, b.neighborhood as beneficiary_neighborhood,
-      b.notes as beneficiary_notes,
-      c.full_name as carpenter_name, c.phone as carpenter_phone, c.whatsapp as carpenter_whatsapp,
-      c.status as carpenter_status,
-      u.full_name as created_by_name,
-      u2.full_name as assigned_by_name
-    FROM kitchens k
-    LEFT JOIN kitchen_statuses ks ON k.status_id = ks.id
-    LEFT JOIN kitchen_types kt ON k.kitchen_type_id = kt.id
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    LEFT JOIN carpenters c ON k.assigned_carpenter_id = c.id
-    LEFT JOIN users u ON k.created_by = u.id
-    LEFT JOIN users u2 ON k.assigned_by = u2.id
-    WHERE k.id = ?
-  `).get(id);
+  if (!kitchen) { res.status(404).json({ error: 'Cocina no encontrada' }); return; }
 
-  if (!kitchen) {
-    res.status(404).json({ error: 'Cocina no encontrada' });
-    return;
-  }
+  const observations = await prisma.observation.findMany({ where: { entityType: 'kitchen', entityId: kitchenId }, include: { user: { select: { fullName: true } } }, orderBy: { createdAt: 'desc' } });
 
-  const history = await db.prepare(`
-    SELECT ksh.*, ks.display_name as status_name, ks.color as status_color, u.full_name as changed_by_name
-    FROM kitchen_status_history ksh
-    LEFT JOIN kitchen_statuses ks ON ksh.new_status_id = ks.id
-    LEFT JOIN users u ON ksh.changed_by = u.id
-    WHERE ksh.kitchen_id = ?
-    ORDER BY ksh.changed_at ASC
-  `).all(id);
-
-  const observations = await db.prepare(`
-    SELECT o.*, u.full_name as user_name
-    FROM observations o
-    LEFT JOIN users u ON o.user_id = u.id
-    WHERE o.entity_type = 'kitchen' AND o.entity_id = ?
-    ORDER BY o.created_at DESC
-  `).all(id);
-
-  const evidenceList = await db.prepare(`
-    SELECT e.*, u.full_name as uploaded_by_name, u2.full_name as validated_by_name
-    FROM evidence e
-    LEFT JOIN users u ON e.uploaded_by = u.id
-    LEFT JOIN users u2 ON e.validated_by = u2.id
-    WHERE e.kitchen_id = ?
-    ORDER BY e.created_at DESC
-  `).all(id);
-
-  res.json({ ...kitchen, history, observations, evidence: evidenceList });
+  const k = formatKitchen(kitchen);
+  res.json({
+    ...k,
+    history: kitchen.statusHistory.map((h: any) => ({ ...h, status_name: h.newStatus?.displayName, status_color: h.newStatus?.color, changed_by_name: h.changer?.fullName })),
+    observations: observations.map((o) => ({ ...o, user_name: o.user.fullName })),
+    evidence: kitchen.evidence.map((e: any) => ({ ...e, uploaded_by_name: e.uploader?.fullName, validated_by_name: e.validator?.fullName })),
+  });
 }
 
 export async function createKitchen(req: AuthRequest, res: Response): Promise<void> {
-  const { kitchen_type_id, beneficiary_name, beneficiary_phone, beneficiary_whatsapp,
-    beneficiary_address, beneficiary_zone, beneficiary_neighborhood, beneficiary_notes, notes } = req.body;
+  const { kitchen_type_id, beneficiary_name, beneficiary_phone, beneficiary_whatsapp, beneficiary_address, beneficiary_zone, beneficiary_neighborhood, beneficiary_notes, notes } = req.body;
+  if (!kitchen_type_id || !beneficiary_name || !beneficiary_address) { res.status(400).json({ error: 'Tipo de cocina, nombre del beneficiario y direccion son requeridos' }); return; }
 
-  if (!kitchen_type_id || !beneficiary_name || !beneficiary_address) {
-    res.status(400).json({ error: 'Tipo de cocina, nombre del beneficiario y direccion son requeridos' });
-    return;
-  }
-
-  const pendingStatus = await db.prepare('SELECT id FROM kitchen_statuses WHERE name = ?').get('pending') as any;
-
-  const benefResult = await db.prepare(
-    'INSERT INTO beneficiaries (full_name, phone, whatsapp, address, zone, neighborhood, notes) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(beneficiary_name, beneficiary_phone || null, beneficiary_whatsapp || null, beneficiary_address,
-    beneficiary_zone || null, beneficiary_neighborhood || null, beneficiary_notes || null);
-
-  const lastKitchen = await db.prepare('SELECT kitchen_number FROM kitchens ORDER BY id DESC LIMIT 1').get() as any;
+  const pendingStatus = await prisma.kitchenStatus.findFirst({ where: { name: 'pending' } });
+  const lastKitchen = await prisma.kitchen.findFirst({ orderBy: { id: 'desc' }, select: { kitchenNumber: true } });
   let nextNum = 10480;
-  if (lastKitchen) {
-    const num = parseInt(lastKitchen.kitchen_number.replace('KC-', ''));
-    nextNum = num + 1;
-  }
+  if (lastKitchen?.kitchenNumber) nextNum = parseInt(lastKitchen.kitchenNumber.replace('KC-', '')) + 1;
 
-  const result = await db.prepare(
-    'INSERT INTO kitchens (kitchen_number, kitchen_type_id, beneficiary_id, status_id, created_by, notes) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(`KC-${nextNum}`, kitchen_type_id, benefResult.lastInsertRowid, pendingStatus.id, req.user!.userId, notes || null);
+  const beneficiary = await prisma.beneficiary.create({ data: { fullName: beneficiary_name, phone: beneficiary_phone || null, whatsapp: beneficiary_whatsapp || null, address: beneficiary_address, zone: beneficiary_zone || null, neighborhood: beneficiary_neighborhood || null, notes: beneficiary_notes || null } });
 
-  await db.prepare(
-    'INSERT INTO kitchen_status_history (kitchen_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?)'
-  ).run(result.lastInsertRowid, pendingStatus.id, req.user!.userId, 'Cocina creada');
+  const kitchen = await prisma.kitchen.create({ data: { kitchenNumber: `KC-${nextNum}`, kitchenTypeId: kitchen_type_id, beneficiaryId: beneficiary.id, statusId: pendingStatus!.id, createdBy: req.user!.userId, notes: notes || null } });
 
-  res.status(201).json({ id: result.lastInsertRowid, kitchen_number: `KC-${nextNum}` });
+  await prisma.kitchenStatusHistory.create({ data: { kitchenId: kitchen.id, newStatusId: pendingStatus!.id, changedBy: req.user!.userId, notes: 'Cocina creada' } });
+
+  res.status(201).json({ id: kitchen.id, kitchen_number: `KC-${nextNum}` });
 }
 
 export async function updateKitchenStatus(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
   const { status_name, notes } = req.body;
+  if (!status_name) { res.status(400).json({ error: 'El estado es requerido' }); return; }
 
-  if (!status_name) {
-    res.status(400).json({ error: 'El estado es requerido' });
-    return;
-  }
+  const kitchen = await prisma.kitchen.findUnique({ where: { id: parseInt(id) } });
+  if (!kitchen) { res.status(404).json({ error: 'Cocina no encontrada' }); return; }
 
-  const kitchen = await db.prepare('SELECT * FROM kitchens WHERE id = ?').get(id) as any;
-  if (!kitchen) {
-    res.status(404).json({ error: 'Cocina no encontrada' });
-    return;
-  }
+  const newStatus = await prisma.kitchenStatus.findFirst({ where: { name: status_name } });
+  if (!newStatus) { res.status(400).json({ error: 'Estado invalido' }); return; }
 
-  const newStatus = await db.prepare('SELECT id FROM kitchen_statuses WHERE name = ?').get(status_name) as any;
-  if (!newStatus) {
-    res.status(400).json({ error: 'Estado invalido' });
-    return;
-  }
+  const updateData: any = { statusId: newStatus.id };
+  if (status_name === 'completed') updateData.completedAt = new Date();
 
-  await db.prepare(`UPDATE kitchens SET status_id = ?, updated_at = datetime('now') WHERE id = ?`)
-    .run(newStatus.id, id);
-
-  await db.prepare(
-    'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, kitchen.status_id, newStatus.id, req.user!.userId, notes || null);
-
-  if (status_name === 'completed') {
-    await db.prepare(`UPDATE kitchens SET completed_at = datetime('now') WHERE id = ?`).run(id);
-  }
+  await prisma.kitchen.update({ where: { id: parseInt(id) }, data: updateData });
+  await prisma.kitchenStatusHistory.create({ data: { kitchenId: parseInt(id), oldStatusId: kitchen.statusId, newStatusId: newStatus.id, changedBy: req.user!.userId, notes: notes || null } });
 
   res.json({ message: 'Estado actualizado exitosamente' });
 }
@@ -199,164 +129,76 @@ export async function updateKitchen(req: AuthRequest, res: Response): Promise<vo
   const { id } = req.params;
   const updates = req.body;
 
-  const kitchen = await db.prepare('SELECT * FROM kitchens WHERE id = ?').get(id);
-  if (!kitchen) {
-    res.status(404).json({ error: 'Cocina no encontrada' });
-    return;
-  }
+  const kitchen = await prisma.kitchen.findUnique({ where: { id: parseInt(id) } });
+  if (!kitchen) { res.status(404).json({ error: 'Cocina no encontrada' }); return; }
 
-  if (updates.notes !== undefined) {
-    await db.prepare(`UPDATE kitchens SET notes = ?, updated_at = datetime('now') WHERE id = ?`).run(updates.notes, id);
-  }
+  const data: any = {};
+  if (updates.notes !== undefined) data.notes = updates.notes;
+  if (updates.whatsapp_message_sent !== undefined) data.whatsappMessageSent = updates.whatsapp_message_sent ? 1 : 0;
 
-  if (updates.whatsapp_message_sent !== undefined) {
-    await db.prepare(`UPDATE kitchens SET whatsapp_message_sent = ?, updated_at = datetime('now') WHERE id = ?`)
-      .run(updates.whatsapp_message_sent ? 1 : 0, id);
-  }
-
+  await prisma.kitchen.update({ where: { id: parseInt(id) }, data });
   res.json({ message: 'Cocina actualizada exitosamente' });
 }
 
 export async function addObservation(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
   const { content } = req.body;
+  if (!content) { res.status(400).json({ error: 'El contenido de la observacion es requerido' }); return; }
 
-  if (!content) {
-    res.status(400).json({ error: 'El contenido de la observacion es requerido' });
-    return;
-  }
-
-  const result = await db.prepare(
-    'INSERT INTO observations (entity_type, entity_id, user_id, content) VALUES (?, ?, ?, ?)'
-  ).run('kitchen', id, req.user!.userId, content);
-
-  res.status(201).json({ id: result.lastInsertRowid });
+  const obs = await prisma.observation.create({ data: { entityType: 'kitchen', entityId: parseInt(id), userId: req.user!.userId, content } });
+  res.status(201).json({ id: obs.id });
 }
 
 export async function uploadEvidence(req: AuthRequest, res: Response): Promise<void> {
   const { id } = req.params;
-  const file = req.file;
+  if (!req.file) { res.status(400).json({ error: 'La imagen es requerida' }); return; }
 
-  if (!file) {
-    res.status(400).json({ error: 'La imagen es requerida' });
-    return;
-  }
-
-  const imageUrl = `/uploads/${file.filename}`;
-
-  const result = await db.prepare(
-    'INSERT INTO evidence (kitchen_id, image_url, uploaded_by, notes) VALUES (?, ?, ?, ?)'
-  ).run(id, imageUrl, req.user!.userId, req.body.notes || null);
-
-  res.status(201).json({ id: result.lastInsertRowid, image_url: imageUrl });
+  const imageUrl = `/uploads/${req.file.filename}`;
+  const ev = await prisma.evidence.create({ data: { kitchenId: parseInt(id), imageUrl, uploadedBy: req.user!.userId, notes: req.body.notes || null } });
+  res.status(201).json({ id: ev.id, image_url: imageUrl });
 }
 
 export async function validateEvidence(req: AuthRequest, res: Response): Promise<void> {
   const { evidenceId } = req.params;
   const { validated } = req.body;
-
-  await db.prepare(`UPDATE evidence SET validated = ?, validated_by = ?, validated_at = datetime('now') WHERE id = ?`)
-    .run(validated ? 1 : 0, req.user!.userId, evidenceId);
-
+  await prisma.evidence.update({ where: { id: parseInt(evidenceId) }, data: { validated: validated ? 1 : 0, validatedBy: req.user!.userId, validatedAt: new Date() } });
   res.json({ message: 'Evidencia actualizada' });
 }
 
 export async function generateWhatsAppMessage(req: AuthRequest, res: Response): Promise<void> {
-  const { id } = req.params;
+  const kitchen = await prisma.kitchen.findUnique({ where: { id: parseInt(req.params.id) }, include: { kitchenType: true, beneficiary: true, assignedCarpenter: true } });
+  if (!kitchen) { res.status(404).json({ error: 'Cocina no encontrada' }); return; }
 
-  const kitchen = await db.prepare(`
-    SELECT k.*, kt.display_name as type_display,
-      b.full_name as beneficiary_name, b.phone as beneficiary_phone, b.address as beneficiary_address,
-      b.zone as beneficiary_zone, b.neighborhood as beneficiary_neighborhood,
-      c.full_name as carpenter_name
-    FROM kitchens k
-    LEFT JOIN kitchen_types kt ON k.kitchen_type_id = kt.id
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    LEFT JOIN carpenters c ON k.assigned_carpenter_id = c.id
-    WHERE k.id = ?
-  `).get(id) as any;
+  const message = `Hola ${kitchen.assignedCarpenter?.fullName || 'Carpintero'}, se le ha asignado una instalacion:\n\n* Cocina: ${kitchen.kitchenNumber}\n* Tipo: ${kitchen.kitchenType.displayName}\n* Beneficiario: ${kitchen.beneficiary?.fullName}\n* Direccion: ${kitchen.beneficiary?.address}\n* Zona: ${kitchen.beneficiary?.zone || 'N/A'}\n* Barrio: ${kitchen.beneficiary?.neighborhood || 'N/A'}\n* Telefono: ${kitchen.beneficiary?.phone || 'N/A'}\n\n${kitchen.notes ? `Observaciones: ${kitchen.notes}` : ''}\n\nPor favor confirmar disponibilidad. Gracias.`;
 
-  if (!kitchen) {
-    res.status(404).json({ error: 'Cocina no encontrada' });
-    return;
-  }
-
-  const message = `Hola ${kitchen.carpenter_name || 'Carpintero'}, se le ha asignado una instalacion:
-
-* Cocina: ${kitchen.kitchen_number}
-* Tipo: ${kitchen.type_display}
-* Beneficiario: ${kitchen.beneficiary_name}
-* Direccion: ${kitchen.beneficiary_address}
-* Zona: ${kitchen.beneficiary_zone || 'N/A'}
-* Barrio: ${kitchen.beneficiary_neighborhood || 'N/A'}
-* Telefono beneficiario: ${kitchen.beneficiary_phone || 'N/A'}
-
-${kitchen.notes ? `Observaciones: ${kitchen.notes}` : ''}
-
-Por favor confirmar disponibilidad. Gracias.`;
-
-  const whatsappUrl = `https://wa.me/${kitchen.carpenter_whatsapp || ''}?text=${encodeURIComponent(message)}`;
-
-  res.json({ message, whatsapp_url: whatsappUrl });
+  res.json({ message, whatsapp_url: `https://wa.me/${kitchen.assignedCarpenter?.whatsapp || ''}?text=${encodeURIComponent(message)}` });
 }
 
-export async function getKitchensStats(req: AuthRequest, res: Response): Promise<void> {
-  const total = await db.prepare('SELECT COUNT(*) as count FROM kitchens').get() as any;
+export async function getKitchensStats(_req: AuthRequest, res: Response): Promise<void> {
+  const [total, byStatus, byType, recentActivity] = await Promise.all([
+    prisma.kitchen.count(),
+    prisma.kitchenStatus.findMany({ include: { _count: { select: { kitchens: true } } }, orderBy: { sortOrder: 'asc' } }),
+    prisma.kitchenType.findMany({ include: { _count: { select: { kitchens: true } } } }),
+    prisma.kitchenStatusHistory.findMany({ take: 10, orderBy: { changedAt: 'desc' }, include: { kitchen: { select: { kitchenNumber: true } }, newStatus: { select: { displayName: true } }, changer: { select: { fullName: true } } } }),
+  ]);
 
-  const byStatus = await db.prepare(`
-    SELECT ks.name, ks.display_name, ks.color, ks.category, COUNT(k.id) as count
-    FROM kitchen_statuses ks
-    LEFT JOIN kitchens k ON k.status_id = ks.id
-    GROUP BY ks.id
-    ORDER BY ks.sort_order
-  `).all();
+  const byZone = await prisma.beneficiary.groupBy({ by: ['zone'], _count: { id: true }, where: { zone: { not: null } }, orderBy: { _count: { id: 'desc' } } });
 
-  const byType = await db.prepare(`
-    SELECT kt.display_name, kt.code, COUNT(k.id) as count
-    FROM kitchen_types kt
-    LEFT JOIN kitchens k ON k.kitchen_type_id = kt.id
-    GROUP BY kt.id
-  `).all();
-
-  const byZone = await db.prepare(`
-    SELECT b.zone, COUNT(k.id) as count
-    FROM kitchens k
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    WHERE b.zone IS NOT NULL
-    GROUP BY b.zone
-    ORDER BY count DESC
-  `).all();
-
-  const recentActivity = await db.prepare(`
-    SELECT ksh.*, k.kitchen_number, ks.display_name as status_name, u.full_name as changed_by_name
-    FROM kitchen_status_history ksh
-    JOIN kitchens k ON ksh.kitchen_id = k.id
-    LEFT JOIN kitchen_statuses ks ON ksh.new_status_id = ks.id
-    LEFT JOIN users u ON ksh.changed_by = u.id
-    ORDER BY ksh.changed_at DESC
-    LIMIT 10
-  `).all();
-
-  const uncontacted = await db.prepare(`SELECT COUNT(*) as count FROM kitchens WHERE status_id = 1`).get() as any;
-  const awaitingConfirmation = await db.prepare(`SELECT COUNT(*) as count FROM kitchens WHERE status_id = 2`).get() as any;
-  const noCarpenter = await db.prepare(`SELECT COUNT(*) as count FROM kitchens WHERE status_id IN (3, 4) AND assigned_carpenter_id IS NULL`).get() as any;
-  const pendingResponse = await db.prepare(`SELECT COUNT(*) as count FROM kitchens WHERE status_id = 5`).get() as any;
-  const pendingEvidence = await db.prepare(`SELECT COUNT(*) as count FROM kitchens WHERE status_id = 9`).get() as any;
-  const pendingValidation = await db.prepare(`SELECT COUNT(*) as count FROM evidence WHERE validated = 0`).get() as any;
+  const [uncontacted, awaitingConfirmation, noCarpenter, pendingResponse, pendingEvidence, pendingValidation] = await Promise.all([
+    prisma.kitchen.count({ where: { status: { name: 'pending' } } }),
+    prisma.kitchen.count({ where: { status: { name: 'beneficiary_contacted' } } }),
+    prisma.kitchen.count({ where: { statusId: { in: [3, 4] }, assignedCarpenterId: null } }),
+    prisma.kitchen.count({ where: { status: { name: 'pending_response' } } }),
+    prisma.kitchen.count({ where: { status: { name: 'evidence_received' } } }),
+    prisma.evidence.count({ where: { validated: 0 } }),
+  ]);
 
   res.json({
-    total: total.count,
-    byStatus,
-    byType,
-    byZone,
-    recentActivity,
-    pendingAttention: {
-      uncontacted: uncontacted.count,
-      awaitingConfirmation: awaitingConfirmation.count,
-      noCarpenter: noCarpenter.count,
-      pendingResponse: pendingResponse.count,
-      pendingEvidence: pendingEvidence.count,
-      pendingValidation: pendingValidation.count,
-    },
+    total,
+    byStatus: byStatus.map((s: any) => ({ name: s.name, display_name: s.displayName, color: s.color, category: s.category, count: s._count.kitchens })),
+    byType: byType.map((t: any) => ({ display_name: t.displayName, code: t.code, count: t._count.kitchens })),
+    byZone: byZone.map((z: any) => ({ zone: z.zone, count: z._count.id })),
+    recentActivity: recentActivity.map((h: any) => ({ ...h, kitchen_number: h.kitchen?.kitchenNumber, status_name: h.newStatus?.displayName, changed_by_name: h.changer?.fullName })),
+    pendingAttention: { uncontacted, awaitingConfirmation, noCarpenter, pendingResponse, pendingEvidence, pendingValidation },
   });
 }

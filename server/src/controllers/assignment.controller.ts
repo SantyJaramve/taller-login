@@ -1,54 +1,42 @@
-// =============================================================================
-// CONTROLADOR DE ASIGNACIONES - CocinasApp
-// =============================================================================
-// Funciones: getCandidates, createAssignment, respondAssignment, getAssignments
-// =============================================================================
-
 import { Response } from 'express';
-import db from '../db/database';
+import prisma from '../lib/prisma';
 import { AuthRequest } from '../types';
 
 export async function getCandidates(req: AuthRequest, res: Response): Promise<void> {
   const { kitchenId } = req.params;
 
-  const kitchen = await db.prepare(`
-    SELECT k.*, kt.category as type_category, kt.subcategory as type_subcategory,
-      b.zone as beneficiary_zone
-    FROM kitchens k
-    JOIN kitchen_types kt ON k.kitchen_type_id = kt.id
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    WHERE k.id = ?
-  `).get(kitchenId) as any;
+  const kitchen = await prisma.kitchen.findUnique({
+    where: { id: parseInt(kitchenId) },
+    include: { kitchenType: true, beneficiary: true },
+  });
 
   if (!kitchen) {
     res.status(404).json({ error: 'Cocina no encontrada' });
     return;
   }
 
-  const beneficiaryZone = kitchen.beneficiary_zone;
+  const beneficiaryZone = kitchen.beneficiary?.zone;
 
-  const candidates = await db.prepare(`
-    SELECT c.*,
-      GROUP_CONCAT(DISTINCT cz.zone) as zones,
-      GROUP_CONCAT(DISTINCT ct.kitchen_type_id) as type_ids,
-      (SELECT COUNT(*) FROM kitchens WHERE assigned_carpenter_id = c.id AND status_id NOT IN (SELECT id FROM kitchen_statuses WHERE name IN ('completed', 'rejected'))) as active_installations,
-      (SELECT COUNT(*) FROM assignments WHERE carpenter_id = c.id AND status = 'rejected') as total_rejections,
-      (SELECT COUNT(*) FROM assignments WHERE carpenter_id = c.id AND status = 'accepted') as total_acceptances,
-      (SELECT COUNT(*) FROM kitchens WHERE assigned_carpenter_id = c.id) as total_assignments
-    FROM carpenters c
-    LEFT JOIN carpenter_zones cz ON c.id = cz.carpenter_id
-    LEFT JOIN carpenter_types ct ON c.id = ct.carpenter_id
-    WHERE c.is_active = 1 AND c.status != 'inactive'
-    GROUP BY c.id
-  `).all();
+  const candidates = await prisma.carpenter.findMany({
+    where: { isActive: 1, status: { not: 'inactive' } },
+    include: {
+      carpenterZones: true,
+      carpenterTypes: true,
+      kitchens: {
+        where: { status: { name: { notIn: ['completed', 'rejected'] } } },
+        select: { id: true },
+      },
+      assignments: { select: { status: true } },
+    },
+  });
 
-  const scored = candidates.map((candidate: any) => {
+  const scored = candidates.map((candidate) => {
     let score = 0;
     const reasons: string[] = [];
     const warnings: string[] = [];
 
-    const typeIds = candidate.type_ids ? candidate.type_ids.split(',').map(Number) : [];
-    const compatible = typeIds.includes(kitchen.kitchen_type_id);
+    const typeIds = candidate.carpenterTypes.map((t) => t.kitchenTypeId);
+    const compatible = typeIds.includes(kitchen.kitchenTypeId);
     if (compatible) {
       score += 30;
       reasons.push('Tipo compatible');
@@ -56,7 +44,7 @@ export async function getCandidates(req: AuthRequest, res: Response): Promise<vo
       warnings.push('Tipo no compatible');
     }
 
-    const zones = candidate.zones ? candidate.zones.split(',') : [];
+    const zones = candidate.carpenterZones.map((z) => z.zone);
     const zoneMatch = beneficiaryZone && zones.includes(beneficiaryZone);
     if (zoneMatch) {
       score += 25;
@@ -73,7 +61,8 @@ export async function getCandidates(req: AuthRequest, res: Response): Promise<vo
       warnings.push('Ocupado actualmente');
     }
 
-    const availableCapacity = candidate.max_capacity - candidate.active_installations;
+    const activeInstallations = candidate.kitchens.length;
+    const availableCapacity = candidate.maxCapacity - activeInstallations;
     if (availableCapacity > 0) {
       score += 15;
       reasons.push(`${availableCapacity} cupos disponibles`);
@@ -82,8 +71,12 @@ export async function getCandidates(req: AuthRequest, res: Response): Promise<vo
       warnings.push('Sin capacidad disponible');
     }
 
-    if (candidate.total_assignments > 0) {
-      const completionRate = ((candidate.total_acceptances / candidate.total_assignments) * 100);
+    const totalAssignments = candidate.assignments.length;
+    const totalAcceptances = candidate.assignments.filter((a) => a.status === 'accepted').length;
+    const totalRejections = candidate.assignments.filter((a) => a.status === 'rejected').length;
+
+    if (totalAssignments > 0) {
+      const completionRate = (totalAcceptances / totalAssignments) * 100;
       if (completionRate >= 80) {
         score += 10;
         reasons.push('Buen historial');
@@ -97,7 +90,18 @@ export async function getCandidates(req: AuthRequest, res: Response): Promise<vo
     }
 
     return {
-      ...candidate,
+      id: candidate.id,
+      full_name: candidate.fullName,
+      phone: candidate.phone,
+      whatsapp: candidate.whatsapp,
+      email: candidate.email,
+      status: candidate.status,
+      max_capacity: candidate.maxCapacity,
+      zones: zones.join(', ') || null,
+      active_installations: activeInstallations,
+      total_rejections: totalRejections,
+      total_acceptances: totalAcceptances,
+      total_assignments: totalAssignments,
       available_capacity: availableCapacity,
       score,
       reasons,
@@ -106,13 +110,13 @@ export async function getCandidates(req: AuthRequest, res: Response): Promise<vo
     };
   });
 
-  scored.sort((a: any, b: any) => b.score - a.score);
+  scored.sort((a, b) => b.score - a.score);
 
   res.json({
     kitchen: {
       id: kitchen.id,
-      kitchen_number: kitchen.kitchen_number,
-      type_display: kitchen.type_name,
+      kitchen_number: kitchen.kitchenNumber,
+      type_display: kitchen.kitchenType.displayName,
       beneficiary_zone: beneficiaryZone,
     },
     candidates: scored,
@@ -128,34 +132,46 @@ export async function createAssignment(req: AuthRequest, res: Response): Promise
     return;
   }
 
-  const kitchen = await db.prepare('SELECT * FROM kitchens WHERE id = ?').get(kitchen_id) as any;
+  const kitchen = await prisma.kitchen.findUnique({ where: { id: kitchen_id } });
   if (!kitchen) {
     res.status(404).json({ error: 'Cocina no encontrada' });
     return;
   }
 
-  const carpenter = await db.prepare('SELECT * FROM carpenters WHERE id = ?').get(carpenter_id) as any;
+  const carpenter = await prisma.carpenter.findUnique({ where: { id: carpenter_id } });
   if (!carpenter) {
     res.status(404).json({ error: 'Carpintero no encontrado' });
     return;
   }
 
-  const pendingResponseStatus = await db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'pending_response'").get() as any;
+  const pendingResponseStatus = await prisma.kitchenStatus.findFirst({ where: { name: 'pending_response' } });
 
-  await db.prepare(
-    'INSERT INTO assignments (kitchen_id, carpenter_id, assigned_by, notes) VALUES (?, ?, ?, ?)'
-  ).run(kitchen_id, carpenter_id, req.user!.userId, notes || null);
+  await prisma.assignment.create({
+    data: { kitchenId: kitchen_id, carpenterId: carpenter_id, assignedBy: req.user!.userId, notes: notes || null },
+  });
 
-  await db.prepare(`UPDATE kitchens SET assigned_carpenter_id = ?, assigned_by = ?, assigned_at = datetime('now') WHERE id = ?`)
-    .run(carpenter_id, req.user!.userId, kitchen_id);
+  await prisma.kitchen.update({
+    where: { id: kitchen_id },
+    data: { assignedCarpenterId: carpenter_id, assignedBy: req.user!.userId, assignedAt: new Date() },
+  });
 
-  if (kitchen.status_id < pendingResponseStatus.id) {
-    await db.prepare('UPDATE kitchens SET status_id = ? WHERE id = ?')
-      .run(pendingResponseStatus.id, kitchen_id);
+  if (pendingResponseStatus && kitchen.statusId < pendingResponseStatus.id) {
+    const oldStatusId = kitchen.statusId;
 
-    await db.prepare(
-      'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
-    ).run(kitchen_id, kitchen.status_id, pendingResponseStatus.id, req.user!.userId, `Carpintero ${carpenter.full_name} contactado`);
+    await prisma.kitchen.update({
+      where: { id: kitchen_id },
+      data: { statusId: pendingResponseStatus.id },
+    });
+
+    await prisma.kitchenStatusHistory.create({
+      data: {
+        kitchenId: kitchen_id,
+        oldStatusId,
+        newStatusId: pendingResponseStatus.id,
+        changedBy: req.user!.userId,
+        notes: `Carpintero ${carpenter.fullName} contactado`,
+      },
+    });
   }
 
   res.status(201).json({ message: 'Asignacion creada exitosamente' });
@@ -165,9 +181,11 @@ export async function respondAssignment(req: AuthRequest, res: Response): Promis
   const { kitchenId } = req.params;
   const { accepted, notes } = req.body;
 
-  const assignment = await db.prepare(
-    "SELECT a.*, c.full_name as carpenter_name FROM assignments a JOIN carpenters c ON a.carpenter_id = c.id WHERE a.kitchen_id = ? AND a.status = 'pending' ORDER BY a.created_at DESC LIMIT 1"
-  ).get(kitchenId) as any;
+  const assignment = await prisma.assignment.findFirst({
+    where: { kitchenId: parseInt(kitchenId), status: 'pending' },
+    include: { carpenter: true },
+    orderBy: { createdAt: 'desc' },
+  });
 
   if (!assignment) {
     res.status(404).json({ error: 'No hay asignacion pendiente para esta cocina' });
@@ -175,33 +193,58 @@ export async function respondAssignment(req: AuthRequest, res: Response): Promis
   }
 
   const newStatus = accepted ? 'accepted' : 'rejected';
-  await db.prepare(`UPDATE assignments SET status = ?, response_at = datetime('now'), notes = COALESCE(?, notes), updated_at = datetime('now') WHERE id = ?`)
-    .run(newStatus, notes || null, assignment.id);
+  await prisma.assignment.update({
+    where: { id: assignment.id },
+    data: { status: newStatus, responseAt: new Date(), notes: notes || undefined },
+  });
 
-  const assignedStatus = await db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'assigned'").get() as any;
-  const rejectedStatus = await db.prepare("SELECT id FROM kitchen_statuses WHERE name = 'rejected'").get() as any;
+  const assignedStatus = await prisma.kitchenStatus.findFirst({ where: { name: 'assigned' } });
+  const rejectedStatus = await prisma.kitchenStatus.findFirst({ where: { name: 'rejected' } });
 
-  const kitchen = await db.prepare('SELECT * FROM kitchens WHERE id = ?').get(kitchenId) as any;
+  const kitchen = await prisma.kitchen.findUnique({ where: { id: parseInt(kitchenId) } });
 
-  if (accepted) {
-    await db.prepare('UPDATE kitchens SET status_id = ? WHERE id = ?').run(assignedStatus.id, kitchenId);
+  if (accepted && assignedStatus && kitchen) {
+    await prisma.kitchen.update({
+      where: { id: parseInt(kitchenId) },
+      data: { statusId: assignedStatus.id },
+    });
 
-    await db.prepare(
-      'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
-    ).run(kitchenId, kitchen.status_id, assignedStatus.id, req.user!.userId, `Carpintero ${assignment.carpenter_name} acepto`);
+    await prisma.kitchenStatusHistory.create({
+      data: {
+        kitchenId: parseInt(kitchenId),
+        oldStatusId: kitchen.statusId,
+        newStatusId: assignedStatus.id,
+        changedBy: req.user!.userId,
+        notes: `Carpintero ${assignment.carpenter.fullName} acepto`,
+      },
+    });
 
-    const carpenter = await db.prepare('SELECT * FROM carpenters WHERE id = ?').get(assignment.carpenter_id) as any;
+    const carpenter = await prisma.carpenter.findUnique({ where: { id: assignment.carpenterId } });
     if (carpenter) {
-      await db.prepare('UPDATE carpenters SET current_load = current_load + 1, status = CASE WHEN current_load + 1 >= max_capacity THEN ? ELSE status END WHERE id = ?')
-        .run('busy', assignment.carpenter_id);
+      const newLoad = carpenter.currentLoad + 1;
+      await prisma.carpenter.update({
+        where: { id: assignment.carpenterId },
+        data: {
+          currentLoad: newLoad,
+          ...(newLoad >= carpenter.maxCapacity ? { status: 'busy' } : {}),
+        },
+      });
     }
-  } else {
-    await db.prepare('UPDATE kitchens SET status_id = ?, assigned_carpenter_id = NULL, assigned_by = NULL WHERE id = ?')
-      .run(rejectedStatus.id, kitchenId);
+  } else if (!accepted && rejectedStatus && kitchen) {
+    await prisma.kitchen.update({
+      where: { id: parseInt(kitchenId) },
+      data: { statusId: rejectedStatus.id, assignedCarpenterId: null, assignedBy: null },
+    });
 
-    await db.prepare(
-      'INSERT INTO kitchen_status_history (kitchen_id, old_status_id, new_status_id, changed_by, notes) VALUES (?, ?, ?, ?, ?)'
-    ).run(kitchenId, kitchen.status_id, rejectedStatus.id, req.user!.userId, `Carpintero ${assignment.carpenter_name} rechazo`);
+    await prisma.kitchenStatusHistory.create({
+      data: {
+        kitchenId: parseInt(kitchenId),
+        oldStatusId: kitchen.statusId,
+        newStatusId: rejectedStatus.id,
+        changedBy: req.user!.userId,
+        notes: `Carpintero ${assignment.carpenter.fullName} rechazo`,
+      },
+    });
   }
 
   res.json({ message: accepted ? 'Asignacion aceptada' : 'Asignacion rechazada' });
@@ -209,38 +252,42 @@ export async function respondAssignment(req: AuthRequest, res: Response): Promis
 
 export async function getAssignments(req: AuthRequest, res: Response): Promise<void> {
   const { status, carpenter, page = '1', limit = '20' } = req.query;
+  const pageNum = parseInt(page as string);
+  const limitNum = parseInt(limit as string);
+  const skip = (pageNum - 1) * limitNum;
 
-  let where = 'WHERE 1=1';
-  const params: any[] = [];
+  const where: any = {};
+  if (status) where.status = status as string;
+  if (carpenter) where.carpenterId = parseInt(carpenter as string);
 
-  if (status) { where += ' AND a.status = ?'; params.push(status); }
-  if (carpenter) { where += ' AND a.carpenter_id = ?'; params.push(carpenter); }
-
-  const offset = (parseInt(page as string) - 1) * parseInt(limit as string);
-
-  const countResult = await db.prepare(`SELECT COUNT(*) as count FROM assignments a ${where}`).get(...params) as any;
-
-  const assignments = await db.prepare(`
-    SELECT a.*,
-      k.kitchen_number, kt.display_name as kitchen_type,
-      b.full_name as beneficiary_name, b.zone as beneficiary_zone,
-      c.full_name as carpenter_name, c.phone as carpenter_phone,
-      u.full_name as assigned_by_name
-    FROM assignments a
-    JOIN kitchens k ON a.kitchen_id = k.id
-    LEFT JOIN kitchen_types kt ON k.kitchen_type_id = kt.id
-    LEFT JOIN beneficiaries b ON k.beneficiary_id = b.id
-    JOIN carpenters c ON a.carpenter_id = c.id
-    LEFT JOIN users u ON a.assigned_by = u.id
-    ${where}
-    ORDER BY a.created_at DESC
-    LIMIT ? OFFSET ?
-  `).all(...params, parseInt(limit as string), offset);
+  const [data, total] = await Promise.all([
+    prisma.assignment.findMany({
+      where,
+      include: {
+        kitchen: { include: { kitchenType: true, beneficiary: true } },
+        carpenter: true,
+        assigner: { select: { fullName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limitNum,
+    }),
+    prisma.assignment.count({ where }),
+  ]);
 
   res.json({
-    data: assignments,
-    total: countResult.count,
-    page: parseInt(page as string),
-    totalPages: Math.ceil(countResult.count / parseInt(limit as string)),
+    data: data.map((a) => ({
+      ...a,
+      kitchen_number: a.kitchen.kitchenNumber,
+      kitchen_type: a.kitchen.kitchenType.displayName,
+      beneficiary_name: a.kitchen.beneficiary?.fullName,
+      beneficiary_zone: a.kitchen.beneficiary?.zone,
+      carpenter_name: a.carpenter.fullName,
+      carpenter_phone: a.carpenter.phone,
+      assigned_by_name: a.assigner.fullName,
+    })),
+    total,
+    page: pageNum,
+    totalPages: Math.ceil(total / limitNum),
   });
 }
