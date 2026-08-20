@@ -12,7 +12,9 @@ let client: Client | null = null;
 
 function getClient(): Client {
   if (!client) {
-    const url = process.env.TURSO_DATABASE_URL || 'file:./data/cocinas.db';
+    const isNetlify = !!process.env.NETLIFY;
+    const dbPath = isNetlify ? '/tmp/cocinas.db' : './data/cocinas.db';
+    const url = process.env.TURSO_DATABASE_URL || `file:${dbPath}`;
     const authToken = process.env.TURSO_AUTH_TOKEN || undefined;
     client = createClient({ url, authToken });
   }

@@ -17,6 +17,14 @@ import assignmentRoutes from './routes/assignment.routes';
 export function createApp(): express.Express {
   const app = express();
 
+  // --- Strip Netlify Functions prefix (rewrite: /api/* -> /.netlify/functions/api/*) ---
+  app.use((req, _res, next) => {
+    if (req.url.startsWith('/.netlify/functions/api')) {
+      req.url = req.url.replace('/.netlify/functions/api', '') || '/';
+    }
+    next();
+  });
+
   // --- Crear directorio de uploads si no existe ---
   const uploadsDir = path.join(__dirname, '../uploads');
   if (!fs.existsSync(uploadsDir)) {
