@@ -1,6 +1,5 @@
 const serverlessHttp = require('serverless-http');
 const { createApp } = require('../../server/dist/app');
-const { initializeDatabase } = require('../../server/dist/db/schema');
 
 let app;
 let handler;
@@ -8,8 +7,6 @@ let handler;
 exports.handler = async (event, context) => {
   try {
     if (!app) {
-      console.log('Inicializando base de datos...');
-      await initializeDatabase();
       console.log('Creando app Express...');
       app = createApp();
       handler = serverlessHttp(app);
